@@ -69,13 +69,13 @@ def build_retriever(file_path):
 
 # --- 6. UI ---
 with st.sidebar:
-    st.title("💼 DocuAudit Settings")
-# Clean and simple: Assign the widget directly with the environmental fallback
-api_key = st.text_input("Groq API Key", type="password") or os.environ.get("GROQ_API_KEY")
+   st.title("💼 DocuAudit Settings")
 
-st.markdown("### Target Users:")
-st.markdown("- Procurement Managers\n- Compliance Officers\n- Internal Auditors (CAs)")
-if st.button("Reset Workspace"):
+# ✨ CLEAN LOOK: Pull directly from background cloud secrets (No UI box needed anymore!)
+api_key = os.environ.get("GROQ_API_KEY")
+
+# Simple, professional workspace utility
+if st.button("Reset Workspace", use_container_width=True):
     st.session_state.chat_history = []
     st.session_state.retrievers = {}
     st.session_state.file_names = []
