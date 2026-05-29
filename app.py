@@ -25,7 +25,7 @@ from flashrank import Ranker, RerankRequest
 # 3. MANUAL FLASHRANK ENGINE (Rebranded)
 class DocuAuditReranker:
     def __init__(self):
-        self.ranker = Ranker()
+        self.ranker = Ranker(cache_dir=".")
     
     def compress_documents(self, query, documents):
         if not documents: return []
@@ -37,6 +37,11 @@ class DocuAuditReranker:
 # --- 4. CONFIGURATION & SESSION ---
 st.set_page_config(page_title="DocuAudit AI", layout="wide")
 
+# ✨ FIX 1: Create a cached function so only ONE thread downloads the model at a time
+@st.cache_resource
+def get_reranker_engine():
+    return DocuAuditReranker()
+
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "retrievers" not in st.session_state:
@@ -44,7 +49,8 @@ if "retrievers" not in st.session_state:
 if "file_names" not in st.session_state:
     st.session_state.file_names = []
 if "engine" not in st.session_state:
-    st.session_state.engine = DocuAuditReranker()
+    # ✨ FIX 2: Call the cached function instead of creating it directly
+    st.session_state.engine = get_reranker_engine()
 
 # --- 5. RAG PIPELINE ---
 @st.cache_resource
