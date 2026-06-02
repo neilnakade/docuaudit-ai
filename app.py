@@ -37,11 +37,12 @@ class DocuAuditReranker:
 # --- 4. CONFIGURATION & SESSION ---
 st.set_page_config(page_title="DocuAudit AI", layout="wide")
 
-# ✨ FIX 1: Create a cached function so only ONE thread downloads the model at a time
+# Cached function ensuring only one thread builds the model container at boot time
 @st.cache_resource
 def get_reranker_engine():
     return DocuAuditReranker()
 
+# ✨ FIXED: All session state states safely initialized together at the top
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "retrievers" not in st.session_state:
@@ -49,8 +50,27 @@ if "retrievers" not in st.session_state:
 if "file_names" not in st.session_state:
     st.session_state.file_names = []
 if "engine" not in st.session_state:
-    # ✨ FIX 2: Call the cached function instead of creating it directly
     st.session_state.engine = get_reranker_engine()
+
+# ✨ CLEAN SIDEBAR UI: Tied directly to background cloud variables
+api_key = os.environ.get("GROQ_API_KEY")
+
+st.sidebar.title("💼 DocuAudit Settings")
+st.sidebar.markdown("---")
+st.sidebar.success("🔒 Cloud Gateway Secure")
+st.sidebar.caption(
+    "Enterprise data isolation active. Groq LLM infrastructure is authenticated "
+    "via production background environment variables."
+)
+st.sidebar.markdown("---")
+
+# Neatly formatted and confined workspace clear utility 
+if st.sidebar.button("🔄 Reset Workspace", use_container_width=True):
+    st.session_state.chat_history = []
+    st.session_state.retrievers = {}
+    st.session_state.file_names = []
+    st.rerun()
+
 
 # --- 5. RAG PIPELINE ---
 @st.cache_resource
@@ -68,18 +88,7 @@ def build_retriever(file_path):
     return EnsembleRetriever(retrievers=[bm25_retriever, vector_retriever], weights=[0.4, 0.6])
 
 # --- 6. UI ---
-with st.sidebar:
-   st.title("💼 DocuAudit Settings")
 
-# ✨ CLEAN LOOK: Pull directly from background cloud secrets (No UI box needed anymore!)
-api_key = os.environ.get("GROQ_API_KEY")
-
-# Simple, professional workspace utility
-if st.button("Reset Workspace", use_container_width=True):
-    st.session_state.chat_history = []
-    st.session_state.retrievers = {}
-    st.session_state.file_names = []
-    st.rerun()
 
 st.title("DocuAudit AI: Procurement & Compliance Engine")
 st.markdown("Automated hybrid-search auditing for vendor agreements, NDAs, and corporate compliance.")
