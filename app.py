@@ -37,12 +37,16 @@ class DocuAuditReranker:
 # --- 4. CONFIGURATION & SESSION ---
 st.set_page_config(page_title="DocuAudit AI", layout="wide")
 
-# Cached function ensuring only one thread builds the model container at boot time
 @st.cache_resource
 def get_reranker_engine():
     return DocuAuditReranker()
 
-# ✨ FIXED: All session state states safely initialized together at the top
+# Initialize dynamic keys to flush memory caches completely
+if "db_version" not in st.session_state:
+    st.session_state.db_version = 0
+if "file_uploader_key" not in st.session_state:
+    st.session_state.file_uploader_key = 0
+
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "retrievers" not in st.session_state:
@@ -52,23 +56,21 @@ if "file_names" not in st.session_state:
 if "engine" not in st.session_state:
     st.session_state.engine = get_reranker_engine()
 
-# ✨ CLEAN SIDEBAR UI: Tied directly to background cloud variables
 api_key = os.environ.get("GROQ_API_KEY")
 
 st.sidebar.title("💼 DocuAudit Settings")
 st.sidebar.markdown("---")
 st.sidebar.success("🔒 Cloud Gateway Secure")
-st.sidebar.caption(
-    "Enterprise data isolation active. Groq LLM infrastructure is authenticated "
-    "via production background environment variables."
-)
+st.sidebar.caption("Enterprise data isolation active.")
 st.sidebar.markdown("---")
 
-# Neatly formatted and confined workspace clear utility 
+# Incrementing the versions forces Chroma and the UI to drop old data instantly
 if st.sidebar.button("🔄 Reset Workspace", use_container_width=True):
     st.session_state.chat_history = []
     st.session_state.retrievers = {}
     st.session_state.file_names = []
+    st.session_state.db_version += 1        # Creates a brand new, empty database collection
+    st.session_state.file_uploader_key += 1 # Completely clears out the browser's file uploader cache
     st.rerun()
 
 
@@ -81,18 +83,32 @@ def build_retriever(file_path):
     loader = PyPDFLoader(file_path)
     chunks = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150).split_documents(loader.load())
     
-    vector_retriever = Chroma.from_documents(chunks, get_embeddings()).as_retriever(search_kwargs={"k": 15})
+    # Forces Chroma to isolate documents by session ID version
+    unique_collection = f"docuaudit_session_{st.session_state.db_version}"
+    
+    vector_retriever = Chroma.from_documents(
+        chunks, 
+        get_embeddings(),
+        collection_name=unique_collection
+    ).as_retriever(search_kwargs={"k": 15})
+    
     bm25_retriever = BM25Retriever.from_documents(chunks)
     bm25_retriever.k = 15
     
     return EnsembleRetriever(retrievers=[bm25_retriever, vector_retriever], weights=[0.4, 0.6])
 
+
 # --- 6. UI ---
-
-
 st.title("DocuAudit AI: Procurement & Compliance Engine")
 st.markdown("Automated hybrid-search auditing for vendor agreements, NDAs, and corporate compliance.")
-files = st.file_uploader("Upload Vendor Contracts (PDF)", type="pdf", accept_multiple_files=True)
+
+# Fixed File Uploader with Dynamic State Key
+files = st.file_uploader(
+    "Upload Vendor Contracts (PDF)", 
+    type="pdf", 
+    accept_multiple_files=True, 
+    key=f"uploader_{st.session_state.file_uploader_key}"
+)
 
 if files and api_key:
     for f in files:
