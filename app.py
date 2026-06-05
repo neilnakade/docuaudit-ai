@@ -41,7 +41,6 @@ st.set_page_config(page_title="DocuAudit AI", layout="wide")
 def get_reranker_engine():
     return DocuAuditReranker()
 
-# Initialize dynamic keys to flush memory caches completely
 if "db_version" not in st.session_state:
     st.session_state.db_version = 0
 if "file_uploader_key" not in st.session_state:
@@ -64,13 +63,12 @@ st.sidebar.success("🔒 Cloud Gateway Secure")
 st.sidebar.caption("Enterprise data isolation active.")
 st.sidebar.markdown("---")
 
-# Incrementing the versions forces Chroma and the UI to drop old data instantly
 if st.sidebar.button("🔄 Reset Workspace", use_container_width=True):
     st.session_state.chat_history = []
     st.session_state.retrievers = {}
     st.session_state.file_names = []
-    st.session_state.db_version += 1        # Creates a brand new, empty database collection
-    st.session_state.file_uploader_key += 1 # Completely clears out the browser's file uploader cache
+    st.session_state.db_version += 1        
+    st.session_state.file_uploader_key += 1 
     st.rerun()
 
 
@@ -79,18 +77,25 @@ if st.sidebar.button("🔄 Reset Workspace", use_container_width=True):
 def get_embeddings():
     return HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
-def build_retriever(file_path):
+def build_retriever(file_path, original_name):
     loader = PyPDFLoader(file_path)
     chunks = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150).split_documents(loader.load())
     
-    # Forces Chroma to isolate documents by session ID version
+    # Tag each chunk with its true source filename
+    for chunk in chunks:
+        chunk.metadata["filename"] = original_name
+    
     unique_collection = f"docuaudit_session_{st.session_state.db_version}"
     
+    # Isolate vector searches strictly to this file name
     vector_retriever = Chroma.from_documents(
         chunks, 
         get_embeddings(),
         collection_name=unique_collection
-    ).as_retriever(search_kwargs={"k": 15})
+    ).as_retriever(search_kwargs={
+        "k": 15,
+        "filter": {"filename": original_name}
+    })
     
     bm25_retriever = BM25Retriever.from_documents(chunks)
     bm25_retriever.k = 15
@@ -102,7 +107,6 @@ def build_retriever(file_path):
 st.title("DocuAudit AI: Procurement & Compliance Engine")
 st.markdown("Automated hybrid-search auditing for vendor agreements, NDAs, and corporate compliance.")
 
-# Fixed File Uploader with Dynamic State Key
 files = st.file_uploader(
     "Upload Vendor Contracts (PDF)", 
     type="pdf", 
@@ -116,7 +120,7 @@ if files and api_key:
             with st.spinner(f"Indexing {f.name}..."):
                 temp = f"temp_{f.name}"
                 with open(temp, "wb") as buffer: buffer.write(f.getbuffer())
-                st.session_state.retrievers[f.name] = build_retriever(temp)
+                st.session_state.retrievers[f.name] = build_retriever(temp, f.name)
                 st.session_state.file_names.append(f.name)
                 os.remove(temp)
 
@@ -156,7 +160,6 @@ if st.session_state.file_names:
                 refined = st.session_state.engine.compress_documents(final_query, docs)
                 context += f"\n--- DOCUMENT: {name} ---\n" + "\n".join([d.page_content for d in refined])
 
-            # THE ELITE COMPLIANCE PROMPT
             client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
             res = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
