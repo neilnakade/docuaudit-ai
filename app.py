@@ -253,3 +253,4 @@ if st.session_state.chat_history:
             data=export_text,
             file_name="DocuAudit_Compliance_Report.txt",
             mime="text/plain"
+        )
