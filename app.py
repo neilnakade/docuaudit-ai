@@ -208,7 +208,8 @@ if final_query := st.chat_input("Query your contracts (e.g., 'What are the IP ri
             for name, retriever in st.session_state.retrievers.items():
                 docs = retriever.invoke(final_query)
                 # Compress to top 3 clauses
-                refined = st.session_state.engine.compress_documents(final_query, docs)[:3]
+                # ✨ FIXED: Sequence[Document] first, query string second
+                refined = st.session_state.engine.compress_documents(docs, final_query)[:3]
                 
                 for doc in refined:
                     filename = doc.metadata.get("filename", "Unknown")
