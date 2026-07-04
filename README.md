@@ -26,5 +26,5 @@
 
 ### 1. Clone the repository
 ```bash
-git clone [https://github.com/your-username/docuaudit-ai.git](https://github.com/your-username/docuaudit-ai.git)
+git clone [https://github.com/neilnakade/docuaudit-ai.git](https://github.com/your-username/docuaudit-ai.git)
 cd docuaudit-ai
