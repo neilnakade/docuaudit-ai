@@ -174,9 +174,6 @@ Alternatively, use the chat input to ask specific semantic questions about the u
 
 Click the "Verifiable Source Documents Used" expander below any AI response to trace the answer back to the exact source text and page number.
 
-Screenshots
-Repository Structure
-Plaintext
 docuaudit-ai/
 │
 ├── app.py                 # Main Streamlit application and RAG pipeline
