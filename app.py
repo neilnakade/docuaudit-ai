@@ -1,327 +1,279 @@
-import streamlit as st
 import os
 import tempfile
-import time
-import re
 import hashlib
 import json
+import re
+import streamlit as st
 
-# --- LangChain & Retrieval Imports ---
 from langchain_community.document_loaders import PyPDFLoader
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.vectorstores import Chroma
-from langchain.retrievers import EnsembleRetriever
-from langchain_community.retrievers import BM25Retriever
-from langchain.retrievers.document_compressors import FlashrankRerank
 from langchain_core.documents import Document
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import Chroma
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.retrievers import BM25Retriever
+from langchain.retrievers import EnsembleRetriever
+from langchain.retrievers.document_compressors import FlashrankRerank
+from langchain.retrievers import ContextualCompressionRetriever
+from langchain_groq import ChatGroq
+from langchain_core.prompts import ChatPromptTemplate
 
-# --- LLM Import ---
-from groq import Groq
-
-# ==========================================
-# 1. PAGE CONFIGURATION & STATE INIT
-# ==========================================
-st.set_page_config(page_title="DocuAudit AI", layout="wide")
-
-if "retrievers" not in st.session_state:
-    st.session_state.retrievers = {}
-if "file_names" not in st.session_state:
-    st.session_state.file_names = []
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
-if "db_version" not in st.session_state:
-    st.session_state.db_version = 1
-if "file_uploader_key" not in st.session_state:
-    st.session_state.file_uploader_key = 0
-
-# ==========================================
-# 2. CORE UTILITIES
-# ==========================================
-@st.cache_resource
-def get_embeddings():
-    """Load lightweight, high-performance local embeddings."""
-    return HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-
-def get_reranker():
-    """Initialize FlashRank for semantic compression."""
-    return FlashrankRerank()
-
-def reset_workspace():
-    """Safely increments the DB session to prevent Chroma cache bleeding."""
-    st.session_state.retrievers = {}
-    st.session_state.file_names = []
-    st.session_state.chat_history = []
-    st.session_state.db_version += 1
-    st.session_state.file_uploader_key += 1 
-    st.rerun()
-
-def parse_json_safely(raw_response):
-    """Safely extracts JSON from LLM output, handling markdown blocks if present."""
-    cleaned_response = re.sub(r'^```json\n|```$', '', raw_response.strip(), flags=re.MULTILINE)
-    try:
-        parsed = json.loads(cleaned_response)
-        return parsed.get("answer", raw_response), parsed.get("used_sources", [])
-    except json.JSONDecodeError:
-        return raw_response, []
-
-# ==========================================
-# 3. ENTERPRISE PARSING & RETRIEVAL PIPELINE
-# ==========================================
-def build_retriever(file_path, original_name):
-    """Parses PDF via regex structural boundaries and builds a hybrid retriever."""
-    loader = PyPDFLoader(file_path)
-    docs = loader.load()
-    
-    full_text = ""
-    for doc in docs:
-        p = doc.metadata.get("page", 0) + 1
-        full_text += f" [INTERNAL_PAGE_{p}] " + doc.page_content
-        
-    # Matches "Section X", "Article X", "X.X", "X.", or "X "
-    clause_pattern = r'(?im)(?=^\s*(?:section\s+\d+|article\s+\d+|\d+\.\d+|\d+\.?)(?:\s+[\-\:]|\s+[A-Z]))'
-    raw_chunks = re.split(clause_pattern, full_text)
-    
-    chunks = []
-    current_page = 1
-    
-    for raw_chunk in raw_chunks:
-        text = raw_chunk.strip()
-        if not text: continue
-            
-        page_markers = re.findall(r'\[INTERNAL_PAGE_(\d+)\]', text)
-        if page_markers:
-            current_page = int(page_markers[-1])
-            
-        clean_text = re.sub(r'\[INTERNAL_PAGE_\d+\]', '', text).strip()
-        if len(clean_text) < 20: continue
-            
-        header_match = re.search(r'(?i)^\s*(section\s+\d+|article\s+\d+|\d+\.\d+|\d+\.?)', clean_text)
-        true_section = header_match.group(1).strip().upper() if header_match else "General"
-        
-        chunks.append(Document(
-            page_content=clean_text,
-            metadata={"filename": original_name, "page": current_page - 1, "true_section": true_section}
-        ))
-        
-    if not chunks:
-        chunks = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100).split_documents(docs)
-        for chunk in chunks:
-            chunk.metadata["filename"] = original_name
-            chunk.metadata["true_section"] = "General"
-
-    unique_collection = f"docuaudit_session_{st.session_state.db_version}"
-
-    # ... your existing code where you split the document into 'chunks' or 'splits' ...
-
-    # Add this safety check before creating the Chroma vector store
-    if not chunks: # (or whatever your list of split documents is named)
-        st.error(f"⚠️ Could not extract any readable text from {file_name}. It may be a scanned image or encrypted.")
-        st.stop() # This halts the app gracefully instead of crashing
-
-    
-    vector_retriever = Chroma.from_documents(
-        chunks, get_embeddings(), collection_name=unique_collection
-    ).as_retriever(search_kwargs={"k": 4, "filter": {"filename": original_name}})
-    
-    bm25_retriever = BM25Retriever.from_documents(chunks)
-    bm25_retriever.k = 4
-    
-    return EnsembleRetriever(retrievers=[bm25_retriever, vector_retriever], weights=[0.3, 0.7])
-
-# ==========================================
-# 4. USER INTERFACE & SIDEBAR
-# ==========================================
-api_key = os.environ.get("GROQ_API_KEY")
-
-st.sidebar.title("💼 DocuAudit Settings")
-st.sidebar.markdown("---")
-st.sidebar.success("🔒 Cloud Gateway Secure")
-st.sidebar.caption("Enterprise data isolation active.")
-st.sidebar.markdown("---")
-
-if st.sidebar.button("🔄 Reset Workspace", use_container_width=True):
-    reset_workspace()
-
-st.title("DocuAudit AI: Procurement & Compliance Engine")
-st.markdown("Automated hybrid-search auditing for vendor agreements, NDAs, and corporate compliance.")
-
-# Restored Main-Screen Uploader
-files = st.file_uploader(
-    "Upload Vendor Contracts (PDF)", 
-    type="pdf", 
-    accept_multiple_files=True, 
-    key=f"uploader_{st.session_state.file_uploader_key}"
+# Page Configuration
+st.set_page_config(
+    page_title="DocuAudit AI",
+    page_icon="📜",
+    layout="wide"
 )
 
-# Process Uploads
-if files and api_key:
-    for f in files:
-        if f.name not in st.session_state.file_names:
-            with st.spinner(f"Indexing {f.name}..."):
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                    tmp.write(f.read())
-                    tmp_path = tmp.name
-                
-                st.session_state.retrievers[f.name] = build_retriever(tmp_path, f.name)
-                st.session_state.file_names.append(f.name)
-                os.remove(tmp_path)
-    
-    if "engine" not in st.session_state:
-        st.session_state.engine = get_reranker()
+# Initialize Session State
+if "retrievers" not in st.session_state:
+    st.session_state.retrievers = {}
+if "all_chunks" not in st.session_state:
+    st.session_state.all_chunks = {}
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-# --- Restored 3-Column Quick Actions ---
-clicked_query = None
-if st.session_state.file_names:
-    st.markdown("### Quick Compliance Checks")
-    col1, col2, col3 = st.columns(3)
+# Sidebar Settings
+with st.sidebar:
+    st.title("DocuAudit Settings")
+    api_key = os.getenv("GROQ_API_KEY") or st.text_input("Groq API Key", type="password")
     
-    with col1:
-        if st.button("🟥 Scan for Critical Vendor Risks"):
-            clicked_query = "Act as a Corporate Compliance Auditor. Scan the documents for critical risks such as unilateral termination, hidden auto-renewals, or unreciprocal indemnifications. Group the findings clearly."
-    with col2:
-        if st.button("🟨 Audit Financial Liabilities"):
-            clicked_query = "Extract and audit all financial terms, including payment timelines (e.g., Net-30), monthly retainers, late fees, and hidden penalties. Display as a clean breakdown."
-    with col3:
-        if st.button("⚖️ Compare Multi-Vendor Terms"):
-            clicked_query = "Provide a side-by-side comparative analysis of the core business and legal terms across all uploaded vendor agreements. Output as a Markdown table."
+    st.markdown("---")
+    st.markdown("🟢 **Status:** Session Active")
+    st.caption("Enterprise data isolation active. Processing happens in-memory.")
+    
+    if st.button("🔄 Reset Workspace"):
+        st.session_state.retrievers = {}
+        st.session_state.all_chunks = {}
+        st.session_state.messages = []
+        st.rerun()
+
+# Main Header
+st.title("DocuAudit AI: Procurement & Compliance Engine")
+st.caption("Automated hybrid-search auditing for vendor agreements, NDAs, and corporate compliance.")
+
+# File Uploader
+uploaded_files = st.file_uploader(
+    "Upload Vendor Contracts (PDF)",
+    type=["pdf"],
+    accept_multiple_files=True
+)
+
+# Helper: Clause-Aware Regex Chunking
+def clause_aware_chunking(documents, file_name):
+    chunks = []
+    clause_pattern = re.compile(r'(?=\b(?:Section|Article|Clause)\s+\d+(?:\.\d+)*\b)', re.IGNORECASE)
+    
+    for doc in documents:
+        text = doc.page_content
+        page_num = doc.metadata.get("page", 0) + 1
+        
+        # Split text on clause patterns if present, else fallback to block
+        split_texts = clause_pattern.split(text)
+        for part in split_texts:
+            clean_text = part.strip()
+            if clean_text:
+                # Generate deterministic MD5 hash ID for source attribution
+                chunk_hash = hashlib.md5(f"{file_name}_{page_num}_{clean_text[:50]}".encode()).hexdigest()[:8]
+                chunks.append(Document(
+                    page_content=clean_text,
+                    metadata={
+                        "source_file": file_name,
+                        "page": page_num,
+                        "chunk_id": chunk_hash
+                    }
+                ))
+    return chunks
+
+# Helper: Build Retriever Pipeline
+def build_retriever(tmp_path, file_name):
+    loader = PyPDFLoader(tmp_path)
+    raw_docs = loader.load()
+    
+    # Clause-aware chunking
+    chunks = clause_aware_chunking(raw_docs, file_name)
+    
+    # Robust Safety Check: Verify if ANY chunk contains readable text
+    has_readable_text = any(doc.page_content.strip() for doc in chunks) if chunks else False
+    if not chunks or not has_readable_text:
+        st.error(f"⚠️ Could not extract any readable text from {file_name}. It appears to be a scanned image or encrypted document.")
+        return None, None
+
+    # Embeddings & Chroma Vector Store
+    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    vectorstore = Chroma.from_documents(chunks, embeddings)
+    vector_retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+    
+    # BM25 Lexical Retriever
+    bm25_retriever = BM25Retriever.from_documents(chunks)
+    bm25_retriever.k = 5
+    
+    # Ensemble Hybrid Retriever (30% BM25, 70% Vector)
+    ensemble_retriever = EnsembleRetriever(
+        retrievers=[bm25_retriever, vector_retriever],
+        weights=[0.3, 0.7]
+    )
+    
+    # FlashRank Cross-Encoder Reranker
+    compressor = FlashrankRerank(top_n=3)
+    reranker = ContextualCompressionRetriever(
+        base_compressor=compressor,
+        base_retriever=ensemble_retriever
+    )
+    
+    return reranker, chunks
+
+# Process Uploaded Documents
+if uploaded_files:
+    for f in uploaded_files:
+        if f.name not in st.session_state.retrievers:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                tmp.write(f.getvalue())
+                tmp_path = tmp.name
             
-    st.divider()
+            with st.spinner(f"Indexing {f.name}..."):
+                retriever, chunks = build_retriever(tmp_path, f.name)
+                if retriever and chunks:
+                    st.session_state.retrievers[f.name] = retriever
+                    st.session_state.all_chunks[f.name] = chunks
+            
+            os.remove(tmp_path)
 
-# ==========================================
-# 5. CHAT HISTORY
-# ==========================================
-for msg in st.session_state.chat_history:
+# Display Chat History
+for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
-        if msg.get("sources"):
+        if "sources" in msg and msg["sources"]:
             with st.expander("🔍 Verifiable Source Documents Used"):
                 for src in msg["sources"]:
-                    st.markdown(f"**{src['clause']}** | File: `{src['filename']}` | **Page: {src['page']}**")
-                    st.info(f'"{src["content"]}"')
+                    st.markdown(f"**[{src['source_file']} - Page {src['page']}] (ID: `{src['chunk_id']}`)**")
+                    st.caption(f'"{src["content"]}"')
 
-# ==========================================
-# 6. INFERENCE & METADATA PROVENANCE ENGINE
-# ==========================================
-typed_query = st.chat_input("Ask a specific compliance or procurement question...")
-final_query = typed_query if typed_query else clicked_query
+# Quick Action Buttons
+st.markdown("### Quick Compliance Audits")
+col1, col2, col3 = st.columns(3)
+preset_query = None
+with col1:
+    if st.button("🟥 Scan for Critical Vendor Risks"):
+        preset_query = "List all financial liabilities, termination penalties, indemnification clauses, and unilateral terms in the document."
+with col2:
+    if st.button("💳 Payment & Term Audit"):
+        preset_query = "What are the payment terms, invoice due dates, interest fees for late payments, and renewal deadlines?"
+with col3:
+    if st.button("🛡️ NDA & Data Compliance"):
+        preset_query = "What are the confidentiality obligations, data protection requirements, and liability limits?"
 
-if final_query:
-    if not st.session_state.retrievers:
-        st.warning("Please upload a document first.")
+# Chat Input
+user_query = st.chat_input("Ask a question about the uploaded contracts...") or preset_query
+
+if user_query:
+    if not api_key:
+        st.error("Please enter your Groq API Key in the sidebar or set GROQ_API_KEY environment variable.")
         st.stop()
         
-    if not os.environ.get("GROQ_API_KEY"):
-        st.error("Please provide a valid Groq API Key.")
+    if not st.session_state.retrievers:
+        st.warning("Please upload at least one valid text-based PDF contract to begin analysis.")
         st.stop()
 
+    # Add user query to chat
+    st.session_state.messages.append({"role": "user", "content": user_query})
     with st.chat_message("user"):
-        st.markdown(final_query)
+        st.markdown(user_query)
+
+    # Retrieve relevant context across all active document retrievers
+    all_retrieved_docs = []
+    for file_name, retriever in st.session_state.retrievers.items():
+        retrieved = retriever.invoke(user_query)
+        all_retrieved_docs.extend(retrieved)
+
+    # Deduplicate docs by chunk_id
+    unique_docs = {}
+    for doc in all_retrieved_docs:
+        cid = doc.metadata.get("chunk_id")
+        if cid not in unique_docs:
+            unique_docs[cid] = doc
+    
+    final_context_docs = list(unique_docs.values())
+
+    # Prepare context payload for LLM
+    context_blocks = []
+    for doc in final_context_docs:
+        context_blocks.append(
+            f"[ID: {doc.metadata['chunk_id']}] Document: {doc.metadata['source_file']} (Page {doc.metadata['page']})\nContent: {doc.page_content}"
+        )
+    formatted_context = "\n\n---\n\n".join(context_blocks)
+
+    # System Prompt enforcing JSON structure with Source Attribution
+    prompt_template = ChatPromptTemplate.from_messages([
+        ("system", """You are DocuAudit AI, an expert legal contract and procurement auditor.
+Analyze the user's request using ONLY the provided context blocks below.
+
+CONTEXT BLOCKS:
+{context}
+
+INSTRUCTIONS:
+1. Provide a direct, factual, and technical answer.
+2. Rely ONLY on the provided context blocks. Do not assume or extrapolate.
+3. If the answer cannot be found in the context, state that clearly and return an empty array `[]` for used_chunk_ids.
+4. You MUST respond with a valid JSON object matching this exact structure:
+{{
+    "answer": "Your detailed answer formatted in Markdown here.",
+    "used_chunk_ids": ["hash1", "hash2"]
+}}
+Return ONLY the raw JSON object."""),
+        ("human", "{question}")
+    ])
+
+    # LLM Initialization
+    llm = ChatGroq(
+        groq_api_key=api_key,
+        model_name="llama-3.3-70b-versatile",
+        temperature=0.0
+    )
 
     with st.chat_message("assistant"):
-        with st.spinner("Executing Hybrid Search & Semantic Reranking..."):
-            start = time.time()
-            context_prompt = ""
-            source_metadata = {} 
+        with st.spinner("Auditing contract clauses..."):
+            chain = prompt_template | llm
+            response = chain.invoke({"context": formatted_context, "question": user_query})
             
-            # Retrieve & Rerank 
-            for name, retriever in st.session_state.retrievers.items():
-                docs = retriever.invoke(final_query)
-                # ✨ FIXED: Sequence[Document] first, query string second
-                refined = st.session_state.engine.compress_documents(docs, final_query)[:3]
-                
-                for doc in refined:
-                    filename = doc.metadata.get("filename", "Unknown")
-                    page_num = doc.metadata.get("page", 0) + 1
-                    true_section = doc.metadata.get("true_section", "General")
-                    
-                    # Cryptographic ID for immutable provenance
-                    raw_id_string = f"{filename}_{true_section}_{page_num}_{doc.page_content[:30]}"
-                    stable_id = f"doc_{hashlib.md5(raw_id_string.encode('utf-8')).hexdigest()[:8]}"
-                    
-                    source_metadata[stable_id] = {
-                        "id": stable_id, "clause": true_section,
-                        "filename": filename, "page": page_num,
-                        "content": doc.page_content.strip()
-                    }
-                    
-                    context_prompt += f"\n--- ID: {stable_id} ---\n"
-                    context_prompt += f"File: {filename} | Section: {true_section}\n"
-                    context_prompt += f"{doc.page_content}\n"
+            # Parse JSON response
+            raw_content = response.content.strip()
+            if raw_content.startswith("```json"):
+                raw_content = raw_content[7:]
+            if raw_content.startswith("```"):
+                raw_content = raw_content[3:]
+            if raw_content.endswith("```"):
+                raw_content = raw_content[:-3]
+            raw_content = raw_content.strip()
 
-            system_prompt = (
-                "You are an elite Corporate Compliance Auditor and Procurement Specialist. "
-                "You MUST base your answers STRICTLY on the provided context documents. "
-                "If the requested information (e.g., a specific clause, penalty, or topic) is NOT explicitly mentioned in the context, "
-                "you must state EXACTLY: 'The provided documents do not contain information regarding this topic.' "
-                "Do NOT hallucinate risks or penalize the document for missing information. "
-                "Categorize findings visually using: 🟩 [Standard], 🟨 [Review Advised], 🟥 [High Risk]. "
-                "CRITICAL: You must output your response purely as a valid JSON object. "
-                "The JSON must strictly match this exact schema:\n"
-                "{\n"
-                '  "answer": "Your detailed analysis here...",\n'
-                '  "used_sources": ["doc_abc123", "doc_xyz789"]\n'
-                "}\n"
-                "If the information is missing from the context, 'used_sources' MUST be an empty array: []. "
-                "Only include IDs in 'used_sources' that directly and explicitly support your answer."
-            )
+            try:
+                res_json = json.loads(raw_content)
+                answer_text = res_json.get("answer", "No answer generated.")
+                used_ids = res_json.get("used_chunk_ids", [])
+            except Exception:
+                answer_text = response.content
+                used_ids = [doc.metadata["chunk_id"] for doc in final_context_docs]
 
-            client = Groq()
-            res = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                temperature=0.0, 
-                response_format={"type": "json_object"}, 
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"Context Documents:\n{context_prompt}\n\nQuestion: {final_query}"}
-                ]
-            )
-            
-            raw_ans = res.choices[0].message.content
-            ans, claimed_ids = parse_json_safely(raw_ans)
-            
-            verified_sources = []
-            for cid in claimed_ids:
-                if cid in source_metadata:
-                    verified_sources.append(source_metadata[cid])
-            
-            latency = round(time.time() - start, 2)
-            
-            # Render UI
-            st.markdown(ans)
-            if verified_sources:
+            # Match used chunk IDs back to source documents
+            used_sources = []
+            for doc in final_context_docs:
+                if doc.metadata["chunk_id"] in used_ids:
+                    used_sources.append({
+                        "source_file": doc.metadata["source_file"],
+                        "page": doc.metadata["page"],
+                        "chunk_id": doc.metadata["chunk_id"],
+                        "content": doc.page_content
+                    })
+
+            # Render Answer & Source Citations
+            st.markdown(answer_text)
+            if used_sources:
                 with st.expander("🔍 Verifiable Source Documents Used"):
-                    for src in verified_sources:
-                        st.markdown(f"**{src['clause']}** | File: `{src['filename']}` | **Page: {src['page']}**")
-                        st.info(f'"{src["content"]}"')
+                    for src in used_sources:
+                        st.markdown(f"**[{src['source_file']} - Page {src['page']}] (ID: `{src['chunk_id']}`)**")
+                        st.caption(f'"{src["content"]}"')
 
-            st.caption(f"Audit completed in {latency}s")
-            
-            st.session_state.chat_history.append({"role": "user", "content": final_query})
-            st.session_state.chat_history.append({
-                "role": "assistant", 
-                "content": ans, 
-                "sources": verified_sources 
+            # Append to Session State
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": answer_text,
+                "sources": used_sources
             })
-            st.rerun()
-
-# ==========================================
-# 7. EXPORT LOGIC
-# ==========================================
-if st.session_state.chat_history:
-    last_message = st.session_state.chat_history[-1]
-    if last_message["role"] == "assistant":
-        st.divider()
-        
-        export_text = last_message["content"]
-        if last_message.get("sources"):
-            export_text += "\n\n--- VERIFIABLE SOURCE CLAUSES ---\n"
-            for src in last_message["sources"]:
-                export_text += f"\n{src['clause']} | File: {src['filename']} | Page: {src['page']}\n\"{src['content']}\"\n"
-        
-        st.download_button(
-            label="📥 Download Official Audit Report (.txt)",
-            data=export_text,
-            file_name="DocuAudit_Compliance_Report.txt",
-            mime="text/plain"
-        )
