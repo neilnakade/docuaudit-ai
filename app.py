@@ -111,6 +111,14 @@ def build_retriever(file_path, original_name):
             chunk.metadata["true_section"] = "General"
 
     unique_collection = f"docuaudit_session_{st.session_state.db_version}"
+
+    # ... your existing code where you split the document into 'chunks' or 'splits' ...
+
+    # Add this safety check before creating the Chroma vector store
+    if not chunks: # (or whatever your list of split documents is named)
+        st.error(f"⚠️ Could not extract any readable text from {file_name}. It may be a scanned image or encrypted.")
+        st.stop() # This halts the app gracefully instead of crashing
+
     
     vector_retriever = Chroma.from_documents(
         chunks, get_embeddings(), collection_name=unique_collection
