@@ -10,7 +10,7 @@ from langchain_community.vectorstores import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.retrievers import BM25Retriever
 from langchain.retrievers import EnsembleRetriever
-from flashrank import Ranker
+from flashrank import Ranker, RerankRequest
 from groq import Groq
 from pdf2image import convert_from_path
 import pytesseract
@@ -122,7 +122,6 @@ def rerank_documents(query, documents, top_n=4):
     if not documents:
         return []
     
-    # Changed model to TinyBERT which is pre-bundled and doesn't require an external HTTP download
     ranker = Ranker(model_name="ms-marco-TinyBERT-L-2-v2", cache_dir="/tmp/flashrank")
     
     passages = [
@@ -130,7 +129,8 @@ def rerank_documents(query, documents, top_n=4):
         for idx, doc in enumerate(documents)
     ]
     
-    rerank_request = {"query": query, "passages": passages}
+    # Wrapped in FlashRank's native RerankRequest class to prevent attribute errors
+    rerank_request = RerankRequest(query=query, passages=passages)
     results = ranker.rerank(rerank_request)
     
     reranked_docs = []
