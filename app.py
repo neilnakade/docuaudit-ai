@@ -129,7 +129,6 @@ def rerank_documents(query, documents, top_n=4):
         for idx, doc in enumerate(documents)
     ]
     
-    # Wrapped in FlashRank's native RerankRequest class to prevent attribute errors
     rerank_request = RerankRequest(query=query, passages=passages)
     results = ranker.rerank(rerank_request)
     
@@ -171,7 +170,7 @@ def execute_rag(query, context_docs):
             model="llama-3.3-70b-versatile",
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
+                {"role": "user", "user_prompt": user_prompt}
             ],
             temperature=0.0,
             response_format={"type": "json_object"}
@@ -265,7 +264,8 @@ if st.session_state.retrievers:
                         for doc in chunk_list:
                             if doc.metadata["chunk_id"] == cite_id:
                                 st.markdown(f"**Source Document:** `{doc.metadata['source']}` (Reference ID: `{cite_id}`)")
-                                st.blockquote(doc.page_content)
+                                # Fixed UI rendering bug using Markdown syntax for blockquotes
+                                st.markdown(f"> {doc.page_content}")
                                 found_source = True
                                 break
                     if not found_source:
