@@ -12,6 +12,8 @@ from langchain_community.retrievers import BM25Retriever
 from langchain.retrievers import EnsembleRetriever
 from flashrank import Ranker
 from groq import Groq
+from pdf2image import convert_from_path
+import pytesseract
 
 # Page configuration
 st.set_page_config(page_title="DocuAudit AI", layout="wide")
@@ -59,23 +61,37 @@ def clause_aware_chunking(text, file_name):
 
 def build_retriever(file_path, file_name):
     """
-    Ingests text content, checks for formatting validity, and configures
-    a hybrid lexical + semantic search ensemble.
+    Ingests text content. If the PDF contains no digital text layer,
+    it falls back to an optical character recognition (OCR) pipeline.
     """
     loader = PyPDFLoader(file_path)
     raw_docs = loader.load()
     
     # Consolidate raw text strings across the documents
     all_text = "\n\n".join([doc.page_content for doc in raw_docs])
+    
+    # --- AUTOMATIC OCR FALLBACK LAYER ---
+    if not any(char.isalnum() for char in all_text):
+        with st.spinner(f"🔍 Scanned image PDF detected in '{file_name}'. Initializing OCR Engine..."):
+            # Convert PDF pages to images in memory
+            pages = convert_from_path(file_path)
+            ocr_chunks = []
+            
+            for i, page_image in enumerate(pages):
+                # Extract text visually from each page image
+                page_text = pytesseract.image_to_string(page_image)
+                ocr_chunks.append(page_text)
+                
+            all_text = "\n\n".join(ocr_chunks)
+    # -------------------------------------
+
     chunks = clause_aware_chunking(all_text, file_name)
     
-    # --- CRITICAL SAFETY GUARDRAIL ---
-    # Validates that actual string characters were captured from the PDF layers
+    # Final safety check in case the image itself is completely blank
     has_readable_text = any(doc.page_content.strip() for doc in chunks)
     if not chunks or not has_readable_text:
-        st.error(f"⚠️ Could not extract any readable text from '{file_name}'. It appears to be a scanned image, image-only document, or heavily encrypted file.")
+        st.error(f"⚠️ Could not extract text from '{file_name}'. The file appears completely blank or heavily encrypted.")
         st.stop()
-    # ---------------------------------
 
     # Instantiate local lightweight sentence embedding model
     embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
