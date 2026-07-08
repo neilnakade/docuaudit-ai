@@ -122,7 +122,8 @@ def rerank_documents(query, documents, top_n=4):
     if not documents:
         return []
     
-    ranker = Ranker(model_name="ms-marco-MiniLM-L-6-v2", cache_dir="/tmp/flashrank")
+    # Changed model to TinyBERT which is pre-bundled and doesn't require an external HTTP download
+    ranker = Ranker(model_name="ms-marco-TinyBERT-L-2-v2", cache_dir="/tmp/flashrank")
     
     passages = [
         {"id": idx, "text": doc.page_content, "meta": doc.metadata}
