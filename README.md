@@ -95,6 +95,8 @@ Groq API: High-speed inference provider.
 
 Llama 3.3 70B: Foundational LLM for compliance reasoning and JSON structuring.
 
+
+
 Challenges & Engineering Decisions
 Building a robust contract RAG system presented several engineering tradeoffs:
 
@@ -109,6 +111,8 @@ Source Attribution Challenges: Getting LLMs to accurately cite their sources wit
 Real-World PDF Formatting Inconsistencies: Documents with complex headers, footers, or multi-column layouts frequently break standard PDF parsers, requiring robust fallback chunking mechanisms if the Regex clause extractor fails.
 
 Tradeoff Between Answer Quality and Citation Granularity: Larger chunk sizes give the LLM better reasoning context but make the final source citations overly broad. The system balances this by attempting to isolate individual numbered clauses.
+
+
 
 Evaluation & Testing
 The system was evaluated against various contract archetypes to test retrieval accuracy and reasoning boundaries.
@@ -127,6 +131,8 @@ Citation Quality Depends on Document Structure: If a PDF is poorly formatted or 
 PDF Parsing Limitations: PyPDFLoader struggles with multi-column layouts, nested tables, and scanned documents without text layers.
 
 Not Legal Advice: This tool is a semantic search and summarization assistant. Its outputs do not constitute legal advice and must be verified by a human professional. The model can still misinterpret highly complex or contradictory legal jargon.
+
+
 
 Future Improvements
 Layout-Aware Parsing: Replacing the current PDF loader with a layout-aware parser (e.g., LayoutParser or unstructured.io) to properly index tables and multi-column formats.
